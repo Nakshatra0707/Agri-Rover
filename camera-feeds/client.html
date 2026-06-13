@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dual Camera Feed</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0d0f12;
+    --surface:   #161a20;
+    --border:    #2a2f38;
+    --accent:    #3b82f6;
+    --accent-lo: rgba(59,130,246,.12);
+    --text:      #e2e8f0;
+    --muted:     #64748b;
+    --ok:        #22c55e;
+    --warn:      #f59e0b;
+    --err:       #ef4444;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 18px 28px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  header .logo {
+    width: 28px; height: 28px;
+    background: var(--accent);
+    border-radius: 7px;
+    display: grid; place-items: center;
+    flex-shrink: 0;
+  }
+
+  header h1 { font-size: 1rem; font-weight: 600; letter-spacing: -.01em; }
+  header .tag {
+    margin-left: auto;
+    font-size: .7rem; font-weight: 500; letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    padding: 3px 8px; border-radius: 4px;
+  }
+
+  main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 28px;
+  }
+
+  .feeds {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 640px) { .feeds { grid-template-columns: 1fr; } }
+
+  .feed-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .feed-label {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 14px;
+    font-size: .75rem; font-weight: 600;
+    letter-spacing: .06em; text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    background: rgba(255,255,255,.02);
+  }
+
+  .status-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--muted);
+    transition: background .3s;
+  }
+  .status-dot.live  { background: var(--ok);   box-shadow: 0 0 6px var(--ok); }
+  .status-dot.error { background: var(--err);  box-shadow: 0 0 6px var(--err); }
+  .status-dot.waiting { background: var(--warn); }
+
+  .video-wrap {
+    position: relative;
+    background: #000;
+    aspect-ratio: 4/3;
+  }
+
+  video {
+    width: 100%; height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+
+  .placeholder {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 10px;
+    color: var(--muted);
+    font-size: .85rem;
+  }
+  .placeholder svg { opacity: .3; }
+  .placeholder.hidden { display: none; }
+
+  /* Controls */
+  .controls {
+    display: flex; align-items: center; gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  button {
+    font-family: inherit;
+    font-size: .85rem; font-weight: 500;
+    padding: 9px 20px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    transition: opacity .15s, transform .1s;
+  }
+  button:active { transform: scale(.97); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+  }
+  .btn-secondary {
+    background: var(--border);
+    color: var(--text);
+  }
+
+  .info-bar {
+    font-size: .78rem;
+    color: var(--muted);
+    margin-left: auto;
+  }
+
+  /* Stats strip */
+  .stats {
+    display: flex; gap: 24px; flex-wrap: wrap;
+    padding: 14px 18px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font-size: .78rem;
+    color: var(--muted);
+  }
+  .stat { display: flex; flex-direction: column; gap: 3px; }
+  .stat strong { color: var(--text); font-size: .92rem; }
+
+  /* Log */
+  .log-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .log-header {
+    padding: 8px 14px;
+    font-size: .7rem; font-weight: 600;
+    letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+  }
+  #log {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: .72rem;
+    line-height: 1.6;
+    color: var(--muted);
+    padding: 10px 14px;
+    max-height: 120px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+  }
+  .log-ok   { color: var(--ok); }
+  .log-err  { color: var(--err); }
+  .log-warn { color: var(--warn); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <circle cx="5" cy="8" r="3.5" stroke="white" stroke-width="1.5"/>
+      <circle cx="11" cy="8" r="3.5" stroke="white" stroke-width="1.5" stroke-dasharray="2 1.5"/>
+    </svg>
+  </div>
+  <h1>Dual Camera WebRTC</h1>
+  <span class="tag">Raspberry Pi</span>
+</header>
+
+<main>
+
+  <div class="controls">
+    <button class="btn-primary" id="btnConnect">Connect</button>
+    <button class="btn-secondary" id="btnDisconnect" disabled>Disconnect</button>
+    <span class="info-bar" id="connLabel">Not connected</span>
+  </div>
+
+  <div class="feeds">
+    <div class="feed-card">
+      <div class="feed-label">
+        <span class="status-dot" id="dot0"></span>
+        Camera 0
+      </div>
+      <div class="video-wrap">
+        <video id="video0" autoplay playsinline muted></video>
+        <div class="placeholder" id="ph0">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+            <rect x="2" y="6" width="15" height="12" rx="2"/>
+            <path d="M17 9l5-3v12l-5-3V9z"/>
+          </svg>
+          Waiting for stream…
+        </div>
+      </div>
+    </div>
+
+    <div class="feed-card">
+      <div class="feed-label">
+        <span class="status-dot" id="dot1"></span>
+        Camera 1
+      </div>
+      <div class="video-wrap">
+        <video id="video1" autoplay playsinline muted></video>
+        <div class="placeholder" id="ph1">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+            <rect x="2" y="6" width="15" height="12" rx="2"/>
+            <path d="M17 9l5-3v12l-5-3V9z"/>
+          </svg>
+          Waiting for stream…
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><strong id="statState">—</strong>ICE state</div>
+    <div class="stat"><strong id="statConn">—</strong>Connection</div>
+    <div class="stat"><strong id="statFps0">—</strong>Cam 0 FPS</div>
+    <div class="stat"><strong id="statFps1">—</strong>Cam 1 FPS</div>
+    <div class="stat"><strong id="statBytes">—</strong>Bytes in</div>
+  </div>
+
+  <div class="log-wrap">
+    <div class="log-header">Event log</div>
+    <div id="log"></div>
+  </div>
+
+</main>
+
+<script>
+// ── Utilities ──────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+
+function log(msg, cls = '') {
+  const el = $('log');
+  const ts = new Date().toTimeString().slice(0, 8);
+  const line = document.createElement('div');
+  if (cls) line.className = `log-${cls}`;
+  line.textContent = `[${ts}] ${msg}`;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+function setDot(idx, state) {
+  const dot = $(`dot${idx}`);
+  dot.className = 'status-dot ' + state; // live | error | waiting | ''
+}
+
+// ── State ──────────────────────────────────────────────────────────────────
+let pc = null;
+let statsInterval = null;
+const SERVER_URL = window.location.origin; // same host/port as this page
+
+// ── WebRTC ─────────────────────────────────────────────────────────────────
+async function connect() {
+  $('btnConnect').disabled    = true;
+  $('btnDisconnect').disabled = false;
+  $('connLabel').textContent  = 'Connecting…';
+  log('Creating peer connection…');
+
+  pc = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  });
+
+  // We expect exactly two video tracks from the server
+  let trackCount = 0;
+pc.ontrack = ({ track }) => {
+    if (track.kind !== 'video') return;
+    const idx   = trackCount++;
+    const video = $(`video${idx}`);
+    const ph    = $(`ph${idx}`);
+    if (!video) return;
+
+    // Always create a new MediaStream per track — never use streams[0]
+    video.srcObject = new MediaStream([track]);
+    video.play().catch(() => {});
+
+    log(`Track ${idx} assigned to video${idx}`, 'ok');
+    setDot(idx, 'waiting');
+
+    track.onunmute = () => {
+        setDot(idx, 'live');
+        ph.classList.add('hidden');
+        log(`Track ${idx} live`, 'ok');
+    };
+    track.onmute = () => {
+        setDot(idx, 'waiting');
+        ph.classList.remove('hidden');
+        log(`Track ${idx} muted`, 'warn');
+    };
+    track.onended = () => {
+        setDot(idx, 'error');
+        ph.classList.remove('hidden');
+        log(`Track ${idx} ended`, 'err');
+    };
+};
+
+  pc.onicecandidate = ({ candidate }) => {
+    if (candidate) log(`ICE candidate: ${candidate.protocol} ${candidate.address}`);
+  };
+
+  pc.oniceconnectionstatechange = () => {
+    const s = pc.iceConnectionState;
+    $('statState').textContent = s;
+    log(`ICE state → ${s}`, s === 'connected' || s === 'completed' ? 'ok' :
+                              s === 'failed' || s === 'closed'     ? 'err' : '');
+    if (s === 'connected' || s === 'completed') {
+      $('connLabel').textContent = '● Live';
+      startStats();
+    }
+    if (s === 'failed' || s === 'closed' || s === 'disconnected') {
+      $('connLabel').textContent = 'Disconnected';
+      stopStats();
+    }
+  };
+
+  pc.onconnectionstatechange = () => {
+    $('statConn').textContent = pc.connectionState;
+  };
+
+  // Transceivers: request two receive-only video tracks
+  pc.addTransceiver('video', { direction: 'recvonly' });
+  pc.addTransceiver('video', { direction: 'recvonly' });
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+
+  log('Sending offer to server…');
+  try {
+    const res = await fetch(`${SERVER_URL}/offer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sdp: offer.sdp, type: offer.type }),
+    });
+    const answer = await res.json();
+    await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    log('Answer received, negotiation complete', 'ok');
+  } catch (err) {
+    log(`Offer failed: ${err.message}`, 'err');
+    disconnect();
+  }
+}
+
+function disconnect() {
+  if (pc) {
+    pc.close();
+    pc = null;
+  }
+  stopStats();
+  [$('video0'), $('video1')].forEach(v => { v.srcObject = null; });
+  [$('ph0'), $('ph1')].forEach(ph => ph.classList.remove('hidden'));
+  [0, 1].forEach(i => setDot(i, ''));
+  $('btnConnect').disabled    = false;
+  $('btnDisconnect').disabled = true;
+  $('connLabel').textContent  = 'Disconnected';
+  $('statState').textContent  = '—';
+  $('statConn').textContent   = '—';
+  $('statFps0').textContent   = '—';
+  $('statFps1').textContent   = '—';
+  $('statBytes').textContent  = '—';
+  log('Disconnected');
+}
+
+// ── Stats polling ──────────────────────────────────────────────────────────
+let prevStats = {};
+
+function startStats() {
+  if (statsInterval) return;
+  statsInterval = setInterval(async () => {
+    if (!pc) return;
+    const reports = await pc.getStats();
+    let bytesIn = 0;
+    const fps = {};
+
+    reports.forEach(r => {
+      if (r.type === 'inbound-rtp' && r.kind === 'video') {
+        bytesIn += r.bytesReceived || 0;
+        const prev = prevStats[r.id] || {};
+        const dt = (r.timestamp - (prev.timestamp || r.timestamp)) / 1000;
+        const dFrames = (r.framesDecoded || 0) - (prev.framesDecoded || 0);
+        if (dt > 0) fps[r.ssrc] = (dFrames / dt).toFixed(1);
+        prevStats[r.id] = r;
+      }
+    });
+
+    const fpsVals = Object.values(fps);
+    $('statFps0').textContent = fpsVals[0] ? `${fpsVals[0]} fps` : '—';
+    $('statFps1').textContent = fpsVals[1] ? `${fpsVals[1]} fps` : '—';
+    $('statBytes').textContent = bytesIn > 1e6 ? `${(bytesIn/1e6).toFixed(1)} MB`
+                                : bytesIn > 1e3 ? `${(bytesIn/1e3).toFixed(0)} KB` : `${bytesIn} B`;
+  }, 1500);
+}
+
+function stopStats() {
+  clearInterval(statsInterval);
+  statsInterval = null;
+  prevStats = {};
+}
+
+// ── Buttons ────────────────────────────────────────────────────────────────
+$('btnConnect').addEventListener('click', connect);
+$('btnDisconnect').addEventListener('click', disconnect);
+
+log('Page loaded — click Connect to start streams');
+</script>
+</body>
+</html>
