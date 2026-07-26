@@ -288,10 +288,29 @@ function setDot(idx, state) {
   dot.className = 'status-dot ' + state; // live | error | waiting | ''
 }
 
+// ── Config ─────────────────────────────────────────────────────────────────
+const CONFIG = {
+  SIGNALLING_URL: window.location.origin, // Render signalling server URL
+  METERED_DOMAIN: 'agrirover.metered.live',
+  METERED_API_KEY: 'YOUR_METERED_API_KEY',
+};
+
 // ── State ──────────────────────────────────────────────────────────────────
 let pc = null;
 let statsInterval = null;
-const SERVER_URL = window.location.origin; // same host/port as this page
+
+function waitIceGatheringComplete(pc) {
+  if (pc.iceGatheringState === 'complete') return Promise.resolve();
+  return new Promise(resolve => {
+    function check() {
+      if (pc.iceGatheringState === 'complete') {
+        pc.removeEventListener('icegatheringstatechange', check);
+        resolve();
+      }
+    }
+    pc.addEventListener('icegatheringstatechange', check);
+  });
+}
 
 // ── WebRTC ─────────────────────────────────────────────────────────────────
 async function connect() {
@@ -300,11 +319,17 @@ async function connect() {
   $('connLabel').textContent  = 'Connecting…';
   log('Creating peer connection…');
 
-  pc = new RTCPeerConnection({
-    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-  });
+  let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+  try {
+    const res = await fetch(`https://${CONFIG.METERED_DOMAIN}/api/v1/turn/credentials?apiKey=${CONFIG.METERED_API_KEY}`);
+    iceServers = await res.json();
+  } catch (err) {
+    log(`TURN credential fetch failed: ${err.message}`, 'err');
+  }
 
-  // We expect exactly two video tracks from the server
+  pc = new RTCPeerConnection({ iceServers });
+
+  // We expect exactly two video tracks from the broadcaster
   let trackCount = 0;
 pc.ontrack = ({ track }) => {
     if (track.kind !== 'video') return;
@@ -360,25 +385,38 @@ pc.ontrack = ({ track }) => {
     $('statConn').textContent = pc.connectionState;
   };
 
-  // Transceivers: request two receive-only video tracks
-  pc.addTransceiver('video', { direction: 'recvonly' });
-  pc.addTransceiver('video', { direction: 'recvonly' });
+  log('Waiting for offer from broadcaster…');
+  let offer = null;
+  for (let i = 0; i < 30 && !offer; i++) {
+    try {
+      const res = await fetch(`${CONFIG.SIGNALLING_URL}/offer`);
+      if (res.ok) offer = await res.json();
+      else await new Promise(r => setTimeout(r, 1000));
+    } catch {
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+  if (!offer) {
+    log('No offer available — is the broadcaster running?', 'err');
+    disconnect();
+    return;
+  }
 
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-
-  log('Sending offer to server…');
   try {
-    const res = await fetch(`${SERVER_URL}/offer`, {
+    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    await waitIceGatheringComplete(pc);
+
+    log('Sending answer to signalling server…');
+    await fetch(`${CONFIG.SIGNALLING_URL}/answer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sdp: offer.sdp, type: offer.type }),
+      body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type }),
     });
-    const answer = await res.json();
-    await pc.setRemoteDescription(new RTCSessionDescription(answer));
-    log('Answer received, negotiation complete', 'ok');
+    log('Answer sent, negotiating…', 'ok');
   } catch (err) {
-    log(`Offer failed: ${err.message}`, 'err');
+    log(`Negotiation failed: ${err.message}`, 'err');
     disconnect();
   }
 }

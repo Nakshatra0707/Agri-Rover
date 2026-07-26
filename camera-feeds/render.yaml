@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: dual-cam-signalling
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python signalling_server.py --port $PORT
