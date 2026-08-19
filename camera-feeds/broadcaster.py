@@ -32,6 +32,7 @@ from aiortc import (
 from aiortc.contrib.media import MediaRelay
 from av import VideoFrame
 from dotenv import load_dotenv
+from motor_driver import handle_command
 
 load_dotenv()
 
@@ -130,12 +131,6 @@ async def fetch_turn_configuration(session):
         )
         for server in ice_servers
     ])
-
-
-def handle_command(cmd, state):
-    # ponytail: stub — no motor/GPIO driver wired up yet. Swap this body for
-    # real actuation (drive motors, drill actuator) once hardware is decided.
-    logger.info(f"CMD {cmd} {state}")
 
 
 async def wait_ice_gathering_complete(pc):
