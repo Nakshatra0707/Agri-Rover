@@ -87,6 +87,9 @@ async def get_turn_credentials(request):
             f"https://{domain}/api/v1/turn/credentials?apiKey={api_key}"
         ) as resp:
             data = await resp.json()
+    # Metered returns either a list or {"iceServers": [...]}
+    if isinstance(data, dict) and "iceServers" in data:
+        data = data["iceServers"]
     return web.json_response(data)
 
 if __name__ == "__main__":
