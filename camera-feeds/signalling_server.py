@@ -79,7 +79,7 @@ def main():
     web.run_app(app, host=args.host, port=args.port)
 
 
-async def get_turn_credentials(request):
+async def debug_turn(request):
     domain = os.environ.get("METERED_DOMAIN")
     api_key = os.environ.get("METERED_API_KEY")
     async with aiohttp.ClientSession() as session:
@@ -87,10 +87,9 @@ async def get_turn_credentials(request):
             f"https://{domain}/api/v1/turn/credentials?apiKey={api_key}"
         ) as resp:
             data = await resp.json()
-    # Metered returns either a list or {"iceServers": [...]}
-    if isinstance(data, dict) and "iceServers" in data:
-        data = data["iceServers"]
-    return web.json_response(data)
+    return web.json_response({"raw": data, "type": str(type(data))})
+
+app.router.add_get("/debug-turn", debug_turn)
 
 if __name__ == "__main__":
     main()
