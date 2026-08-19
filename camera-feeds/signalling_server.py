@@ -20,6 +20,9 @@ from pathlib import Path
 
 from aiohttp import web
 
+from dotenv import load_dotenv
+load_dotenv()
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("signalling-server")
 
@@ -70,10 +73,21 @@ def main():
     app.router.add_get("/offer", get_offer)
     app.router.add_post("/answer", post_answer)
     app.router.add_get("/answer", get_answer)
+    app.router.add_get("/turn-credentials", get_turn_credentials)
 
     logger.info(f"Signalling server starting → http://{args.host}:{args.port}")
     web.run_app(app, host=args.host, port=args.port)
 
+
+async def get_turn_credentials(request):
+    domain = os.environ.get("METERED_DOMAIN")
+    api_key = os.environ.get("METERED_API_KEY")
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"https://{domain}/api/v1/turn/credentials?apiKey={api_key}"
+        ) as resp:
+            data = await resp.json()
+    return web.json_response(data)
 
 if __name__ == "__main__":
     main()
