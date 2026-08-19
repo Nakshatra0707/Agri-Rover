@@ -14,6 +14,7 @@ TURN_URL / TURN_USERNAME / TURN_CREDENTIAL.
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import threading
@@ -131,6 +132,12 @@ async def fetch_turn_configuration(session):
     ])
 
 
+def handle_command(cmd, state):
+    # ponytail: stub — no motor/GPIO driver wired up yet. Swap this body for
+    # real actuation (drive motors, drill actuator) once hardware is decided.
+    logger.info(f"CMD {cmd} {state}")
+
+
 async def wait_ice_gathering_complete(pc):
     if pc.iceGatheringState == "complete":
         return
@@ -151,6 +158,16 @@ async def run(args):
         @pc.on("connectionstatechange")
         async def on_state():
             logger.info(f"Connection state: {pc.connectionState}")
+
+        control_channel = pc.createDataChannel("control")
+
+        @control_channel.on("message")
+        def on_control_message(message):
+            try:
+                payload = json.loads(message)
+                handle_command(payload["cmd"], payload["state"])
+            except (ValueError, KeyError) as e:
+                logger.warning(f"Bad control message {message!r}: {e}")
 
         cam0 = CameraTrack(args.cam0, args.width, args.height, args.fps, label="cam0")
         cam1 = CameraTrack(args.cam1, args.width, args.height, args.fps, label="cam1")

@@ -195,6 +195,46 @@
   .log-ok   { color: var(--ok); }
   .log-err  { color: var(--err); }
   .log-warn { color: var(--warn); }
+
+  /* Control pad */
+  .pad-wrap {
+    display: flex; gap: 24px; flex-wrap: wrap;
+    align-items: center;
+    padding: 16px 18px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .pad {
+    display: grid;
+    grid-template-columns: repeat(3, 44px);
+    grid-template-rows: repeat(2, 44px);
+    gap: 6px;
+  }
+  .pad button {
+    padding: 0;
+    background: var(--border);
+    color: var(--text);
+    font-size: 1rem;
+  }
+  .pad button:active, .pad button.held {
+    background: var(--accent);
+    color: #fff;
+  }
+  #padForward { grid-column: 2; grid-row: 1; }
+  #padLeft    { grid-column: 1; grid-row: 2; }
+  #padBack    { grid-column: 2; grid-row: 2; }
+  #padRight   { grid-column: 3; grid-row: 2; }
+  .pad-label {
+    font-size: .7rem; font-weight: 600;
+    letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .drill-pad {
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .drill-pad button { width: 44px; height: 44px; }
 </style>
 </head>
 <body>
@@ -262,6 +302,26 @@
     <div class="stat"><strong id="statBytes">—</strong>Bytes in</div>
   </div>
 
+  <div class="pad-wrap">
+    <div>
+      <div class="pad-label">Drive (WASD / arrows)</div>
+      <div class="pad">
+        <button id="padForward" data-cmd="forward" title="Forward (W)">&uarr;</button>
+        <button id="padLeft"    data-cmd="left"    title="Left (A)">&larr;</button>
+        <button id="padBack"    data-cmd="back"    title="Back (S)">&darr;</button>
+        <button id="padRight"   data-cmd="right"   title="Right (D)">&rarr;</button>
+      </div>
+    </div>
+    <div>
+      <div class="pad-label">Drill (Q / E)</div>
+      <div class="drill-pad">
+        <button data-cmd="drill_up"   title="Drill up (Q)">&uarr;</button>
+        <button data-cmd="drill_down" title="Drill down (E)">&darr;</button>
+      </div>
+    </div>
+    <span class="info-bar" id="cmdLabel">Data channel: —</span>
+  </div>
+
   <div class="log-wrap">
     <div class="log-header">Event log</div>
     <div id="log"></div>
@@ -296,6 +356,57 @@ const CONFIG = {
 // ── State ──────────────────────────────────────────────────────────────────
 let pc = null;
 let statsInterval = null;
+let controlChannel = null;
+const pressed = new Set(); // commands currently held, guards keydown auto-repeat
+
+// ── Controls (drive + drill) ──────────────────────────────────────────────
+const KEY_TO_CMD = {
+  w: 'forward', arrowup: 'forward',
+  s: 'back',    arrowdown: 'back',
+  a: 'left',    arrowleft: 'left',
+  d: 'right',   arrowright: 'right',
+  q: 'drill_up',
+  e: 'drill_down',
+};
+
+function sendCommand(cmd, state) {
+  if (state === 'start') {
+    if (pressed.has(cmd)) return; // already held, ignore repeat
+    pressed.add(cmd);
+  } else {
+    if (!pressed.has(cmd)) return; // wasn't held, ignore stray stop
+    pressed.delete(cmd);
+  }
+
+  const btn = document.querySelector(`[data-cmd="${cmd}"]`);
+  if (btn) btn.classList.toggle('held', state === 'start');
+
+  if (!controlChannel || controlChannel.readyState !== 'open') return;
+  controlChannel.send(JSON.stringify({ cmd, state }));
+  log(`CMD ${cmd} ${state}`);
+}
+
+function clearAllCommands() {
+  [...pressed].forEach(cmd => sendCommand(cmd, 'stop'));
+}
+
+document.querySelectorAll('[data-cmd]').forEach(btn => {
+  const cmd = btn.dataset.cmd;
+  btn.addEventListener('mousedown',  () => sendCommand(cmd, 'start'));
+  btn.addEventListener('mouseup',    () => sendCommand(cmd, 'stop'));
+  btn.addEventListener('mouseleave', () => sendCommand(cmd, 'stop'));
+  btn.addEventListener('touchstart', e => { e.preventDefault(); sendCommand(cmd, 'start'); });
+  btn.addEventListener('touchend',   e => { e.preventDefault(); sendCommand(cmd, 'stop'); });
+});
+
+window.addEventListener('keydown', e => {
+  const cmd = KEY_TO_CMD[e.key.toLowerCase()];
+  if (cmd) sendCommand(cmd, 'start');
+});
+window.addEventListener('keyup', e => {
+  const cmd = KEY_TO_CMD[e.key.toLowerCase()];
+  if (cmd) sendCommand(cmd, 'stop');
+});
 
 function waitIceGatheringComplete(pc) {
   if (pc.iceGatheringState === 'complete') return Promise.resolve();
@@ -327,6 +438,12 @@ async function connect() {
   }
 
   pc = new RTCPeerConnection({ iceServers });
+
+  pc.ondatachannel = ({ channel }) => {
+    controlChannel = channel;
+    controlChannel.onopen  = () => { $('cmdLabel').textContent = 'Data channel: open'; log('Control channel open', 'ok'); };
+    controlChannel.onclose = () => { $('cmdLabel').textContent = 'Data channel: closed'; clearAllCommands(); };
+  };
 
   // We expect exactly two video tracks from the broadcaster
   let trackCount = 0;
@@ -377,6 +494,7 @@ pc.ontrack = ({ track }) => {
     if (s === 'failed' || s === 'closed' || s === 'disconnected') {
       $('connLabel').textContent = 'Disconnected';
       stopStats();
+      clearAllCommands();
     }
   };
 
@@ -421,6 +539,9 @@ pc.ontrack = ({ track }) => {
 }
 
 function disconnect() {
+  clearAllCommands();
+  controlChannel = null;
+  $('cmdLabel').textContent = 'Data channel: —';
   if (pc) {
     pc.close();
     pc = null;
