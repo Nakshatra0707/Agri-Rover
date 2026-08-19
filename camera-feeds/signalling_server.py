@@ -61,6 +61,18 @@ async def index(request):
     return web.Response(content_type="text/html", text=CLIENT_HTML.read_text())
 
 
+async def get_turn_credentials(request):
+    domain = os.environ["METERED_DOMAIN"]
+    api_key = os.environ["METERED_API_KEY"]
+    url = f"https://{domain}/api/v1/turn/credentials?apiKey={api_key}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            ice_servers = await resp.json()
+    # Metered returns a plain array of {urls, username, credential} — same
+    # shape broadcaster.py consumes on the Pi side, pass it through as-is.
+    return web.json_response(ice_servers)
+
+
 def main():
     parser = argparse.ArgumentParser(description="WebRTC signalling server")
     parser.add_argument("--host", default="0.0.0.0")
@@ -78,18 +90,6 @@ def main():
     logger.info(f"Signalling server starting → http://{args.host}:{args.port}")
     web.run_app(app, host=args.host, port=args.port)
 
-
-async def debug_turn(request):
-    domain = os.environ.get("METERED_DOMAIN")
-    api_key = os.environ.get("METERED_API_KEY")
-    async with aiohttp.ClientSession() as session:
-        async with session.get(
-            f"https://{domain}/api/v1/turn/credentials?apiKey={api_key}"
-        ) as resp:
-            data = await resp.json()
-    return web.json_response({"raw": data, "type": str(type(data))})
-
-app.router.add_get("/debug-turn", debug_turn)
 
 if __name__ == "__main__":
     main()
