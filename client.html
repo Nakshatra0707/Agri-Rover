@@ -302,6 +302,15 @@
     <div class="stat"><strong id="statBytes">—</strong>Bytes in</div>
   </div>
 
+  <div class="stats">
+    <div class="stat"><strong id="sensMoisture">—</strong>Moisture %</div>
+    <div class="stat"><strong id="sensEc">—</strong>EC (uS/cm)</div>
+    <div class="stat"><strong id="sensPh">—</strong>pH</div>
+    <div class="stat"><strong id="sensN">—</strong>N (mg/kg)</div>
+    <div class="stat"><strong id="sensP">—</strong>P (mg/kg)</div>
+    <div class="stat"><strong id="sensK">—</strong>K (mg/kg)</div>
+  </div>
+
   <div class="pad-wrap">
     <div>
       <div class="pad-label">Drive (WASD / arrows)</div>
@@ -341,6 +350,17 @@ function log(msg, cls = '') {
   line.textContent = `[${ts}] ${msg}`;
   el.appendChild(line);
   el.scrollTop = el.scrollHeight;
+}
+
+function updateSensorReading(r) {
+  // Replayed backlog entries and live readings arrive the same way — last
+  // one written wins, which is exactly "most recent reading" either way.
+  $('sensMoisture').textContent = r.moisture ?? '—';
+  $('sensEc').textContent       = r.ec ?? '—';
+  $('sensPh').textContent       = r.ph ?? '—';
+  $('sensN').textContent        = r.n ?? '—';
+  $('sensP').textContent        = r.p ?? '—';
+  $('sensK').textContent        = r.k ?? '—';
 }
 
 function setDot(idx, state) {
@@ -440,9 +460,17 @@ async function connect() {
   pc = new RTCPeerConnection({ iceServers });
 
   pc.ondatachannel = ({ channel }) => {
-    controlChannel = channel;
-    controlChannel.onopen  = () => { $('cmdLabel').textContent = 'Data channel: open'; log('Control channel open', 'ok'); };
-    controlChannel.onclose = () => { $('cmdLabel').textContent = 'Data channel: closed'; clearAllCommands(); };
+    if (channel.label === 'control') {
+      controlChannel = channel;
+      controlChannel.onopen  = () => { $('cmdLabel').textContent = 'Data channel: open'; log('Control channel open', 'ok'); };
+      controlChannel.onclose = () => { $('cmdLabel').textContent = 'Data channel: closed'; clearAllCommands(); };
+    } else if (channel.label === 'sensors') {
+      channel.onopen    = () => log('Sensor channel open', 'ok');
+      channel.onmessage = ({ data }) => {
+        try { updateSensorReading(JSON.parse(data)); }
+        catch (err) { log(`Bad sensor reading: ${err.message}`, 'warn'); }
+      };
+    }
   };
 
   // We expect exactly two video tracks from the broadcaster
@@ -558,6 +586,7 @@ function disconnect() {
   $('statFps0').textContent   = '—';
   $('statFps1').textContent   = '—';
   $('statBytes').textContent  = '—';
+  ['sensMoisture', 'sensEc', 'sensPh', 'sensN', 'sensP', 'sensK'].forEach(id => $(id).textContent = '—');
   log('Disconnected');
 }
 

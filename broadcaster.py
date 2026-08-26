@@ -33,6 +33,9 @@ from aiortc.contrib.media import MediaRelay
 from av import VideoFrame
 from dotenv import load_dotenv
 from motor_driver import handle_command
+from sensor_reader import SENSOR_LOG_PATH, append_reading, read_log, read_sensors
+
+SENSOR_INTERVAL = 2  # seconds between soil readings
 
 load_dotenv()
 
@@ -164,10 +167,30 @@ async def run(args):
             except (ValueError, KeyError) as e:
                 logger.warning(f"Bad control message {message!r}: {e}")
 
+        sensors_channel = pc.createDataChannel("sensors")
+
+        @sensors_channel.on("open")
+        def on_sensors_open():
+            # Fresh (or reconnected) dashboard — replay everything logged so
+            # far so it doesn't miss readings taken while disconnected.
+            for entry in read_log(SENSOR_LOG_PATH):
+                sensors_channel.send(json.dumps(entry))
+
+        async def sensor_loop():
+            while True:
+                reading = read_sensors()
+                if reading:
+                    entry = append_reading(SENSOR_LOG_PATH, reading)
+                    if sensors_channel.readyState == "open":
+                        sensors_channel.send(json.dumps(entry))
+                await asyncio.sleep(SENSOR_INTERVAL)
+
         cam0 = CameraTrack(args.cam0, args.width, args.height, args.fps, label="cam0")
         cam1 = CameraTrack(args.cam1, args.width, args.height, args.fps, label="cam1")
         pc.addTrack(relay.subscribe(cam0))
         pc.addTrack(relay.subscribe(cam1))
+
+        sensor_task = asyncio.create_task(sensor_loop())
 
         try:
             offer = await pc.createOffer()
@@ -194,6 +217,7 @@ async def run(args):
             while True:
                 await asyncio.sleep(3600)
         finally:
+            sensor_task.cancel()
             await pc.close()
             cam0.stop()
             cam1.stop()
