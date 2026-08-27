@@ -1,12 +1,12 @@
 """
-Motor driver for AgriRover — two L298N H-bridges on GPIO (via gpiozero):
-one drives the two skid-steer wheel motors, the other drives the soil
-probe (up/down).
+Motor driver for AgriRover — one driver board for movement (separate
+forward/backward/left/right pins) and one L298N-style H-bridge for the
+soil probe (up/down).
 
-Wiring: edit the BCM pin constants below to match your board. Each L298N
-channel needs two direction pins (IN1/IN2 or IN3/IN4) plus one PWM-capable
-enable pin (ENA/ENB) for speed control — gpiozero.Motor drives all three
-per motor and gives us forward()/backward()/stop() for free.
+Wiring: edit the BCM pin constants below to match your board. Each drive
+pin is a single PWM-capable output — driving it high/PWM moves that
+direction, off stops it. The probe motor still uses two direction pins
+plus an enable pin (gpiozero.Motor) since it's a plain H-bridge.
 
 Usage from broadcaster.py:
     from motor_driver import handle_command
@@ -17,7 +17,7 @@ Usage from broadcaster.py:
 import logging
 import os
 
-from gpiozero import Motor
+from gpiozero import Motor, PWMOutputDevice
 
 logger = logging.getLogger("motor-driver")
 
@@ -32,27 +32,19 @@ if os.environ.get("GPIOZERO_PIN_FACTORY") == "mock":
 # ── Pin wiring (BCM numbering) — edit these to match your wiring ───────────
 # ponytail: placeholder pin numbers, fill in with the real wiring before
 # running on hardware. Nothing else in this file needs to change.
-LEFT_DRIVE_FORWARD, LEFT_DRIVE_BACKWARD, LEFT_DRIVE_ENABLE = 17, 27, 12
-RIGHT_DRIVE_FORWARD, RIGHT_DRIVE_BACKWARD, RIGHT_DRIVE_ENABLE = 22, 23, 13
+DRIVE_FORWARD, DRIVE_BACKWARD, DRIVE_LEFT, DRIVE_RIGHT = 17, 27, 22, 23
 PROBE_UP, PROBE_DOWN, PROBE_ENABLE = 5, 6, 19
 
-DEFAULT_SPEED = 0.8  # 0.0-1.0, applies to drive motors only
+DEFAULT_SPEED = 0.8  # 0.0-1.0, applies to drive pins only
 
-left_drive = Motor(forward=LEFT_DRIVE_FORWARD, backward=LEFT_DRIVE_BACKWARD, enable=LEFT_DRIVE_ENABLE, pwm=True)
-right_drive = Motor(forward=RIGHT_DRIVE_FORWARD, backward=RIGHT_DRIVE_BACKWARD, enable=RIGHT_DRIVE_ENABLE, pwm=True)
+_DRIVE_PINS = {
+    "forward": PWMOutputDevice(DRIVE_FORWARD),
+    "back":    PWMOutputDevice(DRIVE_BACKWARD),
+    "left":    PWMOutputDevice(DRIVE_LEFT),
+    "right":   PWMOutputDevice(DRIVE_RIGHT),
+}
 probe = Motor(forward=PROBE_UP, backward=PROBE_DOWN, enable=PROBE_ENABLE, pwm=True)
 
-# cmd -> (motor, direction) for start; stop always stops both drive motors
-# or the probe motor, whichever group the cmd belongs to.
-_DRIVE_CMDS = {
-    # tank-turn skid steer: left/right pivot the two sides in opposite
-    # directions. ponytail: turn-in-place only, add a slower-side turn if
-    # wide/rolling turns are needed later.
-    "forward": lambda: (left_drive.forward(DEFAULT_SPEED), right_drive.forward(DEFAULT_SPEED)),
-    "back":    lambda: (left_drive.backward(DEFAULT_SPEED), right_drive.backward(DEFAULT_SPEED)),
-    "left":    lambda: (left_drive.backward(DEFAULT_SPEED), right_drive.forward(DEFAULT_SPEED)),
-    "right":   lambda: (left_drive.forward(DEFAULT_SPEED), right_drive.backward(DEFAULT_SPEED)),
-}
 _PROBE_CMDS = {
     "drill_up":   lambda: probe.forward(DEFAULT_SPEED),
     "drill_down": lambda: probe.backward(DEFAULT_SPEED),
@@ -60,12 +52,8 @@ _PROBE_CMDS = {
 
 
 def handle_command(cmd, state):
-    if cmd in _DRIVE_CMDS:
-        if state == "start":
-            _DRIVE_CMDS[cmd]()
-        else:
-            left_drive.stop()
-            right_drive.stop()
+    if cmd in _DRIVE_PINS:
+        _DRIVE_PINS[cmd].value = DEFAULT_SPEED if state == "start" else 0
     elif cmd in _PROBE_CMDS:
         if state == "start":
             _PROBE_CMDS[cmd]()
@@ -78,8 +66,8 @@ def handle_command(cmd, state):
 
 
 def stop_all():
-    left_drive.stop()
-    right_drive.stop()
+    for pin in _DRIVE_PINS.values():
+        pin.off()
     probe.stop()
 
 
@@ -90,9 +78,9 @@ def demo():
     """
     for cmd in ["forward", "back", "left", "right"]:
         handle_command(cmd, "start")
-        assert left_drive.is_active or right_drive.is_active, f"{cmd} start: drive motors should be active"
+        assert _DRIVE_PINS[cmd].is_active, f"{cmd} start: pin should be active"
         handle_command(cmd, "stop")
-        assert not left_drive.is_active and not right_drive.is_active, f"{cmd} stop: drive motors should be stopped"
+        assert not _DRIVE_PINS[cmd].is_active, f"{cmd} stop: pin should be off"
 
     for cmd in ["drill_up", "drill_down"]:
         handle_command(cmd, "start")
@@ -102,7 +90,7 @@ def demo():
 
     handle_command("forward", "start")
     stop_all()
-    assert not left_drive.is_active and not right_drive.is_active and not probe.is_active
+    assert not any(p.is_active for p in _DRIVE_PINS.values()) and not probe.is_active
 
     handle_command("nonsense", "start")  # should warn, not raise
 
