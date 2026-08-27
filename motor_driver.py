@@ -33,8 +33,10 @@ if os.environ.get("GPIOZERO_PIN_FACTORY") == "mock":
 # Movement L298N: only IN1-4 wired to the Pi, ENA/ENB left on the board's
 # default jumpers (tied permanently on) — no enable pin needed here, gpiozero
 # PWMs the IN pins directly for speed.
-DRIVE_IN1, DRIVE_IN2 = 17, 27   # L298N channel A → drive motor
-STEER_IN1, STEER_IN2 = 22, 23   # L298N channel B → steering motor
+# Real channel pairing (confirmed against actual wiring behavior, not the
+# original assumption): drive motor is on 22/17, steering motor is on 27/23.
+DRIVE_IN1, DRIVE_IN2 = 22, 17   # forward, backward
+STEER_IN1, STEER_IN2 = 27, 23   # forward(=turn left), backward(=turn right)
 # ponytail: probe driver's enable pin placeholder — fill in with the real
 # wiring if it differs.
 PROBE_UP, PROBE_DOWN, PROBE_ENABLE = 5, 6, 19  # second L298N → probe motor
