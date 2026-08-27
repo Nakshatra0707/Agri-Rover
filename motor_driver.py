@@ -39,21 +39,23 @@ STEER_IN1, STEER_IN2 = 22, 23   # L298N channel B → steering motor
 # wiring if it differs.
 PROBE_UP, PROBE_DOWN, PROBE_ENABLE = 5, 6, 19  # second L298N → probe motor
 
-DEFAULT_SPEED = 0.8  # 0.0-1.0, applies to all three motors
+DEFAULT_SPEED = 0.8  # 0.0-1.0, probe only — drive/steer are plain HIGH/LOW
 
-drive = Motor(forward=DRIVE_IN1, backward=DRIVE_IN2, pwm=True)
-steer = Motor(forward=STEER_IN1, backward=STEER_IN2, pwm=True)
+# Drive/steer: no PWM, no enable pin — IN pins driven straight HIGH/LOW.
+drive = Motor(forward=DRIVE_IN1, backward=DRIVE_IN2, pwm=False)
+steer = Motor(forward=STEER_IN1, backward=STEER_IN2, pwm=False)
 probe = Motor(forward=PROBE_UP, backward=PROBE_DOWN, enable=PROBE_ENABLE, pwm=True)
 
-# cmd -> motor + direction. forward/back drive the car; left/right turn the
-# steering motor one way or the other (mechanical steering, not skid steer).
+# cmd -> motor + direction + speed (None = plain on/off, no PWM). forward/back
+# drive the car; left/right turn the steering motor one way or the other
+# (mechanical steering, not skid steer).
 _COMMANDS = {
-    "forward":    (drive, "forward"),
-    "back":       (drive, "backward"),
-    "left":       (steer, "forward"),
-    "right":      (steer, "backward"),
-    "drill_up":   (probe, "forward"),
-    "drill_down": (probe, "backward"),
+    "forward":    (drive, "forward", None),
+    "back":       (drive, "backward", None),
+    "left":       (steer, "forward", None),
+    "right":      (steer, "backward", None),
+    "drill_up":   (probe, "forward", DEFAULT_SPEED),
+    "drill_down": (probe, "backward", DEFAULT_SPEED),
 }
 
 
@@ -62,9 +64,9 @@ def handle_command(cmd, state):
         logger.warning(f"Unknown command: {cmd!r}")
         return
 
-    motor, direction = _COMMANDS[cmd]
+    motor, direction, speed = _COMMANDS[cmd]
     if state == "start":
-        getattr(motor, direction)(DEFAULT_SPEED)
+        getattr(motor, direction)() if speed is None else getattr(motor, direction)(speed)
     else:
         motor.stop()
     logger.info(f"CMD {cmd} {state}")
@@ -81,7 +83,7 @@ def demo():
     Runnable self-check. Needs the mock pin factory since this usually runs
     off-Pi: `GPIOZERO_PIN_FACTORY=mock python3 motor_driver.py`
     """
-    for cmd, (motor, _) in _COMMANDS.items():
+    for cmd, (motor, _, _speed) in _COMMANDS.items():
         handle_command(cmd, "start")
         assert motor.is_active, f"{cmd} start: motor should be active"
         handle_command(cmd, "stop")
