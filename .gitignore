@@ -2,3 +2,5 @@
 __pycache__/
 *.pyc
 CLAUDE.md
+venv/
+sensor_log.jsonl

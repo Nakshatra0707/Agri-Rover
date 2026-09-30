@@ -29,6 +29,7 @@ Usage:
 import json
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -36,35 +37,56 @@ logger = logging.getLogger("sensor-reader")
 
 # ── Wiring / register map — edit to match your probe's datasheet ───────────
 DE_PIN, RE_PIN = 24, 25  # BCM; MAX485 driver/receiver enable
-SERIAL_PORT = "/dev/serial0"   # Pi hardware UART (GPIO14/15)
+SERIAL_PORT = "/dev/ttyAMA0"   # Pi 5: GPIO14/15 UART (serial0 -> ttyAMA10 is the debug port)
 BAUDRATE = 4800
 SLAVE_ADDRESS = 1
 
-# (register offset, scale) — raw register value * scale = real units.
+# (register offset, scale, signed) — raw register value * scale = real units.
 # Standard generic 7-in-1 probe register map; adjust if yours differs.
 REGISTERS = {
-    "moisture": (0, 0.1),   # %RH
-    "ec":       (2, 1.0),   # uS/cm
-    "ph":       (3, 0.1),
-    "n":        (4, 1.0),   # mg/kg
-    "p":        (5, 1.0),   # mg/kg
-    "k":        (6, 1.0),   # mg/kg
+    "moisture":    (0, 0.1, False),   # %
+    "temperature": (1, 0.1, True),    # degC, can go below zero
+    "ec":          (2, 1.0, False),   # uS/cm
+    "ph":          (3, 0.1, False),
+    "n":           (4, 1.0, False),   # mg/kg
+    "p":           (5, 1.0, False),   # mg/kg
+    "k":           (6, 1.0, False),   # mg/kg
 }
-REGISTER_COUNT = 7  # includes temperature at offset 1, which we don't report
+REGISTER_COUNT = 7
+
+# Sanity limits — a value outside these means a corrupt frame or a probe
+# that isn't in the soil, so the whole reading is rejected.
+VALID_RANGE = {
+    "moisture":    (0, 100),
+    "temperature": (-40, 80),
+    "ec":          (0, 20000),
+    "ph":          (0, 14),
+    "n":           (0, 5000),
+    "p":           (0, 5000),
+    "k":           (0, 5000),
+}
+
+READ_ATTEMPTS = 3
+RETRY_DELAY = 0.2  # seconds between attempts
+TURNAROUND_DELAY = 0.002  # let the last bit leave the UART before RX opens
 
 SENSOR_LOG_PATH = Path(__file__).parent / "sensor_log.jsonl"
 
 
 _instrument_cache = None
+_de_re = None  # DE/RE pins are created once and never closed; only the port is reopened
+_io_lock = threading.Lock()  # one Modbus transaction at a time on the shared bus
 
 
 def _instrument():
     """Open the port once and reuse it; DE/RE flip around every write."""
-    global _instrument_cache
+    global _instrument_cache, _de_re
     if _instrument_cache is None:
         import minimalmodbus
-        from gpiozero import DigitalOutputDevice
-        de, re_ = DigitalOutputDevice(DE_PIN), DigitalOutputDevice(RE_PIN)
+        if _de_re is None:
+            from gpiozero import DigitalOutputDevice
+            _de_re = (DigitalOutputDevice(DE_PIN), DigitalOutputDevice(RE_PIN))
+        de, re_ = _de_re
         inst = minimalmodbus.Instrument(SERIAL_PORT, SLAVE_ADDRESS)
         inst.serial.baudrate = BAUDRATE
         inst.serial.timeout = 1
@@ -72,9 +94,12 @@ def _instrument():
 
         def write(data):
             de.on(); re_.on()            # transmit, receiver off
-            n = raw_write(data)
-            inst.serial.flush()          # block until last byte is on the wire
-            de.off(); re_.off()          # back to listening
+            try:
+                n = raw_write(data)
+                inst.serial.flush()      # block until last byte is on the wire
+                time.sleep(TURNAROUND_DELAY)
+            finally:
+                de.off(); re_.off()      # always back to listening
             return n
 
         inst.serial.write = write
@@ -82,18 +107,50 @@ def _instrument():
     return _instrument_cache
 
 
+def _reset_instrument():
+    """Drop the cached port so the next read reopens it from scratch."""
+    global _instrument_cache
+    inst, _instrument_cache = _instrument_cache, None
+    if inst is not None:
+        try:
+            inst.serial.close()
+        except Exception:
+            pass
+
+
+def _decode(registers):
+    """Raw register list -> dict in real units, or None if implausible."""
+    reading = {}
+    for name, (offset, scale, signed) in REGISTERS.items():
+        raw = registers[offset]
+        if signed and raw >= 0x8000:
+            raw -= 0x10000
+        value = round(raw * scale, 2)
+        low, high = VALID_RANGE[name]
+        if not low <= value <= high:
+            logger.warning(f"Rejecting reading: {name}={value} outside {low}..{high}")
+            return None
+        reading[name] = value
+    return reading
+
+
 def read_sensors():
     """Read one set of soil values. Returns a dict, or None on failure."""
     if os.environ.get("SENSOR_MOCK") == "1":
         return _mock_reading()
 
-    try:
-        instrument = _instrument()
-        registers = instrument.read_registers(0, REGISTER_COUNT, functioncode=3)
-        return {name: round(registers[offset] * scale, 2) for name, (offset, scale) in REGISTERS.items()}
-    except Exception as e:
-        logger.warning(f"Sensor read failed: {e}")
-        return None
+    with _io_lock:
+        for attempt in range(1, READ_ATTEMPTS + 1):
+            try:
+                registers = _instrument().read_registers(0, REGISTER_COUNT, functioncode=3)
+                reading = _decode(registers)
+                if reading is not None:
+                    return reading
+            except Exception as e:
+                logger.warning(f"Sensor read failed (attempt {attempt}/{READ_ATTEMPTS}): {e}")
+                _reset_instrument()  # port/GPIO may be wedged; reopen next try
+            time.sleep(RETRY_DELAY)
+    return None
 
 
 def _mock_reading():
@@ -102,6 +159,7 @@ def _mock_reading():
     import random
     return {
         "moisture": round(random.uniform(15, 45), 1),
+        "temperature": round(random.uniform(15, 35), 1),
         "ec":       round(random.uniform(200, 2000), 0),
         "ph":       round(random.uniform(5.5, 7.5), 1),
         "n":        round(random.uniform(20, 200), 0),
@@ -133,7 +191,7 @@ def demo():
     os.environ["SENSOR_MOCK"] = "1"
     reading = read_sensors()
     assert reading is not None
-    for key in ("moisture", "ec", "ph", "n", "p", "k"):
+    for key in ("moisture", "temperature", "ec", "ph", "n", "p", "k"):
         assert key in reading, f"missing {key} in reading"
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -145,6 +203,12 @@ def demo():
         assert len(entries) == 2
         assert entries[0]["moisture"] == reading["moisture"]
         assert "ts" in entries[0]
+
+    # decode: scaling, signed temperature, range rejection
+    ok = _decode([352, 0xFFF6, 1200, 65, 30, 20, 100])
+    assert ok == {"moisture": 35.2, "temperature": -1.0, "ec": 1200.0,
+                  "ph": 6.5, "n": 30.0, "p": 20.0, "k": 100.0}, ok
+    assert _decode([352, 250, 1200, 200, 30, 20, 100]) is None  # pH 20 is garbage
 
     print("sensor_reader self-check OK")
 

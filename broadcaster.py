@@ -178,7 +178,8 @@ async def run(args):
 
         async def sensor_loop():
             while True:
-                reading = read_sensors()
+                # Modbus read blocks (up to seconds on retries) — keep it off the event loop.
+                reading = await asyncio.get_running_loop().run_in_executor(None, read_sensors)
                 if reading:
                     entry = append_reading(SENSOR_LOG_PATH, reading)
                     if sensors_channel.readyState == "open":

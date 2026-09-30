@@ -304,6 +304,7 @@
 
   <div class="stats">
     <div class="stat"><strong id="sensMoisture">—</strong>Moisture %</div>
+    <div class="stat"><strong id="sensTemp">—</strong>Temp °C</div>
     <div class="stat"><strong id="sensEc">—</strong>EC (uS/cm)</div>
     <div class="stat"><strong id="sensPh">—</strong>pH</div>
     <div class="stat"><strong id="sensN">—</strong>N (mg/kg)</div>
@@ -356,6 +357,7 @@ function updateSensorReading(r) {
   // Replayed backlog entries and live readings arrive the same way — last
   // one written wins, which is exactly "most recent reading" either way.
   $('sensMoisture').textContent = r.moisture ?? '—';
+  $('sensTemp').textContent     = r.temperature ?? '—';
   $('sensEc').textContent       = r.ec ?? '—';
   $('sensPh').textContent       = r.ph ?? '—';
   $('sensN').textContent        = r.n ?? '—';
@@ -586,7 +588,7 @@ function disconnect() {
   $('statFps0').textContent   = '—';
   $('statFps1').textContent   = '—';
   $('statBytes').textContent  = '—';
-  ['sensMoisture', 'sensEc', 'sensPh', 'sensN', 'sensP', 'sensK'].forEach(id => $(id).textContent = '—');
+  ['sensMoisture', 'sensTemp', 'sensEc', 'sensPh', 'sensN', 'sensP', 'sensK'].forEach(id => $(id).textContent = '—');
   log('Disconnected');
 }
 
