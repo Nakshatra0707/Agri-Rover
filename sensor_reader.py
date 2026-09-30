@@ -29,6 +29,7 @@ Usage:
 import json
 import logging
 import os
+import statistics
 import threading
 import time
 from pathlib import Path
@@ -134,6 +135,50 @@ def _decode(registers):
     return reading
 
 
+class Calibrator:
+    """Turns raw probe frames into trustworthy values (derived from logged
+    air / plant / water runs; there are no reference solutions, so no
+    offset/gain is applied).
+
+    - Median of the last WINDOW frames: removes the 0/100 flapping and
+      one-off spikes seen while the probe is moved or re-inserted.
+    - Air detection: moisture and EC both 0 means no medium; EC, pH and NPK
+      are meaningless then (pH wanders 5-6 in air), so they become None.
+    - pH is None until the window is stable: after insertion it drifts for
+      minutes (9.0 -> 4.8 in the log). `stable` flags the same for the rest.
+    """
+    WINDOW = 5
+    STABLE_SPAN = {"moisture": 2.0, "ec": 5.0, "ph": 0.3}  # max-min over the window
+    MEDIUM_KEYS = ("moisture", "ec", "ph", "n", "p", "k")
+
+    def __init__(self):
+        self._history = []
+
+    def update(self, raw):
+        self._history = (self._history + [raw])[-self.WINDOW:]
+        med = {k: statistics.median(r[k] for r in self._history) for k in raw}
+        out = {"temperature": round(med["temperature"], 1)}
+        in_air = med["moisture"] == 0 and med["ec"] == 0
+        stable = (
+            not in_air
+            and len(self._history) == self.WINDOW
+            and all(
+                max(r[k] for r in self._history) - min(r[k] for r in self._history) <= span
+                for k, span in self.STABLE_SPAN.items()
+            )
+        )
+        for k in self.MEDIUM_KEYS:
+            out[k] = None if in_air else round(med[k], 2)
+        if not stable:
+            out["ph"] = None
+        out["in_air"] = in_air
+        out["stable"] = stable
+        return out
+
+
+_calibrator = Calibrator()
+
+
 def read_sensors():
     """Read one set of soil values. Returns a dict, or None on failure."""
     if os.environ.get("SENSOR_MOCK") == "1":
@@ -145,7 +190,7 @@ def read_sensors():
                 registers = _instrument().read_registers(0, REGISTER_COUNT, functioncode=3)
                 reading = _decode(registers)
                 if reading is not None:
-                    return reading
+                    return _calibrator.update(reading)
             except Exception as e:
                 logger.warning(f"Sensor read failed (attempt {attempt}/{READ_ATTEMPTS}): {e}")
                 _reset_instrument()  # port/GPIO may be wedged; reopen next try
