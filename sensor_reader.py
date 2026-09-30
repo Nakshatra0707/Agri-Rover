@@ -2,10 +2,17 @@
 Soil sensor reader for AgriRover — 7-in-1 RS485/Modbus probe (moisture,
 temperature, EC, pH, N, P, K in one read).
 
-Wiring: edit SERIAL_PORT/BAUDRATE/SLAVE_ADDRESS below to match your
-USB-RS485 adapter and probe. Register map below matches the common
-generic 7-in-1 soil probes sold for this purpose — check your probe's
-datasheet and adjust REGISTERS/scale factors if it differs.
+Wiring (MAX485 TTL module between Pi and probe; Pi 3.3 V logic):
+    Pi GPIO14 (pin 8,  TXD)  -> MAX485 DI
+    Pi GPIO15 (pin 10, RXD)  <- MAX485 RO
+    Pi GPIO24 (pin 18)       -> MAX485 DE
+    Pi GPIO25 (pin 22)       -> MAX485 RE   (driven together with DE)
+    Pi 3V3 + GND             -> MAX485 VCC + GND
+    MAX485 A/B               -> probe A/B (yellow/blue typically)
+    Probe V+ (brown, 5-30 V) and GND (black) -> separate supply; share its
+    GND with the Pi. A 5th wire, if any, is usually shield: leave it off.
+Pi setup: raspi-config -> Interface -> Serial: login shell NO, hardware YES.
+Motors already use GPIO 5, 6, 17, 22, 23, 27 — these four don't clash.
 
 Readings are persisted to a local JSONL log (append-only, survives
 Pi restarts) as the durable source of truth, independent of whether a
@@ -28,9 +35,8 @@ from pathlib import Path
 logger = logging.getLogger("sensor-reader")
 
 # ── Wiring / register map — edit to match your probe's datasheet ───────────
-# ponytail: placeholder serial settings, fill in with the real adapter
-# port before running on hardware. Nothing else in this file needs to change.
-SERIAL_PORT = "/dev/ttyUSB0"
+DE_PIN, RE_PIN = 24, 25  # BCM; MAX485 driver/receiver enable
+SERIAL_PORT = "/dev/serial0"   # Pi hardware UART (GPIO14/15)
 BAUDRATE = 4800
 SLAVE_ADDRESS = 1
 
@@ -49,12 +55,31 @@ REGISTER_COUNT = 7  # includes temperature at offset 1, which we don't report
 SENSOR_LOG_PATH = Path(__file__).parent / "sensor_log.jsonl"
 
 
+_instrument_cache = None
+
+
 def _instrument():
-    import minimalmodbus
-    instrument = minimalmodbus.Instrument(SERIAL_PORT, SLAVE_ADDRESS)
-    instrument.serial.baudrate = BAUDRATE
-    instrument.serial.timeout = 1
-    return instrument
+    """Open the port once and reuse it; DE/RE flip around every write."""
+    global _instrument_cache
+    if _instrument_cache is None:
+        import minimalmodbus
+        from gpiozero import DigitalOutputDevice
+        de, re_ = DigitalOutputDevice(DE_PIN), DigitalOutputDevice(RE_PIN)
+        inst = minimalmodbus.Instrument(SERIAL_PORT, SLAVE_ADDRESS)
+        inst.serial.baudrate = BAUDRATE
+        inst.serial.timeout = 1
+        raw_write = inst.serial.write
+
+        def write(data):
+            de.on(); re_.on()            # transmit, receiver off
+            n = raw_write(data)
+            inst.serial.flush()          # block until last byte is on the wire
+            de.off(); re_.off()          # back to listening
+            return n
+
+        inst.serial.write = write
+        _instrument_cache = inst
+    return _instrument_cache
 
 
 def read_sensors():
